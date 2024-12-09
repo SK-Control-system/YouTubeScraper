@@ -1,0 +1,70 @@
+name: Build and Deploy to EKS
+
+on:
+  push:
+    branches: 
+      - main
+
+env:
+  KAFKA_BROKER: kafka-svc:9093  # Kafka 브로커 주소
+  AWS_REGION: us-east-1  # AWS 리전
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # GitHub Actions에서 코드 가져오기
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Docker 환경 설정
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      # AWS 크레덴셜 구성
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Docker 이미지를 빌드하고 AWS ECR로 푸시
+      - name: Build and Push Docker Image to AWS ECR
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.ECR_REGISTRY }}/idss:${{ github.run_number }}
+            ${{ secrets.ECR_REGISTRY }}/idss:latest
+
+      # EKS kubeconfig 업데이트
+      - name: Update kubeconfig for EKS
+        run: |
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name CC-cluster
+
+      # Kubernetes 배포 업데이트
+      - name: Deploy to EKS
+        env:
+          ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+          IMAGE_TAG: ${{ github.run_number }}
+        run: |
+          # 이미지 업데이트
+          kubectl set image deployment/idss idss=$ECR_REGISTRY/idss:$IMAGE_TAG
+          
+          # 롤아웃 확인
+          kubectl rollout status deployment/idss
+
+      # 테스트 단계 (선택 사항)
+      - name: Verify Kafka and Selenium functionality
+        run: |
+          # Kafka와 애플리케이션 연결 테스트
+          echo "Verifying Kafka connectivity..."
+          kubectl logs deployment/idss | grep "KafkaProducer"
+          
+          # Selenium 크롤러 테스트
+          echo "Testing Selenium scraping..."
+          kubectl logs deployment/idss | grep "Setting up the driver and navigating to YouTube"

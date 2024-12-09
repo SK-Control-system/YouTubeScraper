@@ -1,0 +1,29 @@
+version: '3.8'
+services:
+  zookeeper:
+    image: wurstmeister/zookeeper:latest
+    container_name: zookeeper
+    ports:
+      - "2181:2181"
+    restart: always
+
+  kafka:
+    image: wurstmeister/kafka:latest
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9093:9093"  # Kafka 포트를 9093으로 변경
+    environment:
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9093
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_BROKER_ID: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/logs
+    volumes:
+      - kafka_data:/var/lib/kafka/logs
+    restart: always
+
+volumes:
+  kafka_data:
+    driver: local
