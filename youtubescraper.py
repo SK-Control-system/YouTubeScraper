@@ -99,12 +99,16 @@ class YouTubeScraper:
 
         while len(self.unique_videos) < max_videos and retries > 0:
             try:
-                video_elements = self.driver.find_elements(By.CSS_SELECTOR, 'a#video-title')
+                video_elements = self.driver.find_elements(By.XPATH, '//ytd-video-renderer')
                 logging.info(f"Found {len(video_elements)} video elements.")
                 
                 for video in video_elements:
-                    title = video.get_attribute("title")
-                    url = video.get_attribute("href")
+                    title_element = video.find_element(By.XPATH, ".//a[@id='video-title']")
+                    channel_image_element = video.find_element(By.XPATH, ".//a[@id='channel-thumbnail']//img")
+
+                    title = title_element.get_attribute("title")
+                    url = title_element.get_attribute("href")
+                    channel_image = channel_image_element.get_attribute("src")
 
                     if url and url not in self.seen_ids:
                         self.seen_ids.add(url)
@@ -112,7 +116,11 @@ class YouTubeScraper:
                         video_id_match = re.search(r"v=([^&]+)", url)
                         if video_id_match:
                             video_id = video_id_match.group(1)
-                            self.unique_videos.append({"videoId": video_id, "videoTitle": title})
+                            self.unique_videos.append({
+                                "videoId": video_id,
+                                "videoTitle": title,
+                                "channelImage": channel_image
+                            })
 
                     if len(self.unique_videos) >= max_videos:
                         break
@@ -129,7 +137,7 @@ class YouTubeScraper:
             self.driver.execute_script("window.scrollTo(0, document.documentElement.scrollHeight);")
             self.wait.until(
                 EC.presence_of_element_located(
-                    (By.CSS_SELECTOR, "ytd-video-renderer:nth-child(5)")
+                    (By.XPATH, '//ytd-video-renderer')
                 )
             )
         except Exception as e:
