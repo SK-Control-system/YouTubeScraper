@@ -98,12 +98,15 @@ class YouTubeScraper:
         retries = 3
         max_videos = 5
 
-        while len(self.unique_videos) < max_videos and retries > 0:
+        while retries > 0:
             try:
                 video_elements = self.driver.find_elements(By.XPATH, '//ytd-video-renderer')
                 logging.info(f"Found {len(video_elements)} video elements.")
 
                 for video in video_elements:
+                    if len(self.unique_videos) >= max_videos:
+                        break  # 최대 비디오 수를 초과하면 종료
+
                     try:
                         title_element = video.find_element(By.XPATH, ".//a[@id='video-title']")
                         channel_image_element = WebDriverWait(video, 10).until(
@@ -128,18 +131,20 @@ class YouTubeScraper:
                     except Exception as e:
                         logging.warning(f"Error processing video: {e}")
 
-                    if len(self.unique_videos) >= max_videos:
-                        break
+                # 수정된 부분: 데이터가 부족하더라도 스크롤 종료 후 데이터 전송
+                if not video_elements or len(self.unique_videos) >= max_videos:
+                    break
 
-                if len(self.unique_videos) < max_videos:
-                    self.scroll_down()
+                # 데이터가 부족하면 스크롤
+                self.scroll_down()
             except Exception as e:
                 retries -= 1
                 logging.error(f"Error collecting videos. Retries left: {retries}. Error: {e}")
+                if retries == 0:
+                    break
 
     def scroll_down(self):
         try:
-            logging.info("Scrolling down to load more videos...")
             self.driver.execute_script("window.scrollTo(0, document.documentElement.scrollHeight);")
             self.wait.until(
                 EC.presence_of_element_located(
@@ -154,11 +159,8 @@ class YouTubeScraper:
         logging.info("Preparing to send data to Kafka...")
         result = {
             "category": self.search_keyword,
-            "items": self.unique_videos,
+            "items": self.unique_videos if self.unique_videos else [{"message": "데이터가 없습니다"}],
         }
-        if not result["items"]:
-            logging.warning("No data collected. Skipping Kafka send.")
-            return
 
         max_retries = 5
         retry_count = 0
@@ -208,8 +210,8 @@ def run_scraper():
         executor.map(scrape_category, categories)
 
 
-# 10분마다 실행
-schedule.every(10).minutes.do(run_scraper)
+# 5분마다 실행
+schedule.every(5).minutes.do(run_scraper)
 
 if __name__ == "__main__":
     try:
