@@ -1,5 +1,3 @@
-import schedule
-import time
 from selenium import webdriver
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
@@ -7,11 +5,14 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
+from apscheduler.schedulers.background import BackgroundScheduler
 from kafka import KafkaProducer
 import logging
 import re
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
+import time
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -26,10 +27,10 @@ class YouTubeScraper:
         chrome_options.add_argument(
             "user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         )
-        chrome_options.binary_location = os.getenv("CHROMIUM_PATH", "/usr/bin/chromium")  # 환경 변수로 경로 설정
-        service = Service(os.getenv("CHROMEDRIVER_PATH", "/usr/bin/chromedriver"))  # 환경 변수로 경로 설정
+        chrome_options.binary_location = os.getenv("CHROMIUM_PATH", "/usr/bin/chromium")
+        service = Service(os.getenv("CHROMEDRIVER_PATH", "/usr/bin/chromedriver"))
 
-        retries = 3  # 드라이버 초기화 재시도 횟수
+        retries = 3
         while retries > 0:
             try:
                 self.driver = webdriver.Chrome(service=service, options=chrome_options)
@@ -57,7 +58,7 @@ class YouTubeScraper:
 
     def setup_driver(self):
         try:
-            logging.info("Setting up the driver and navigating to YouTube...")
+            logging.info(f"Setting up the driver and navigating to YouTube for keyword '{self.search_keyword}'...")
             self.driver.get("https://www.youtube.com/")
             self.wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
         except Exception as e:
@@ -97,43 +98,51 @@ class YouTubeScraper:
         retries = 3
         max_videos = 5
 
-        while len(self.unique_videos) < max_videos and retries > 0:
+        while retries > 0:
             try:
                 video_elements = self.driver.find_elements(By.XPATH, '//ytd-video-renderer')
                 logging.info(f"Found {len(video_elements)} video elements.")
-                
+
                 for video in video_elements:
-                    title_element = video.find_element(By.XPATH, ".//a[@id='video-title']")
-                    channel_image_element = video.find_element(By.XPATH, ".//a[@id='channel-thumbnail']//img")
-
-                    title = title_element.get_attribute("title")
-                    url = title_element.get_attribute("href")
-                    channel_image = channel_image_element.get_attribute("src")
-
-                    if url and url not in self.seen_ids:
-                        self.seen_ids.add(url)
-
-                        video_id_match = re.search(r"v=([^&]+)", url)
-                        if video_id_match:
-                            video_id = video_id_match.group(1)
-                            self.unique_videos.append({
-                                "videoId": video_id,
-                                "videoTitle": title,
-                                "channelImage": channel_image
-                            })
-
                     if len(self.unique_videos) >= max_videos:
                         break
 
-                if len(self.unique_videos) < max_videos:
-                    self.scroll_down()
+                    try:
+                        title_element = video.find_element(By.XPATH, ".//a[@id='video-title']")
+                        channel_image_element = WebDriverWait(video, 10).until(
+                            EC.presence_of_element_located((By.XPATH, ".//a[@id='channel-thumbnail']//img"))
+                        )
+
+                        title = title_element.get_attribute("title")
+                        url = title_element.get_attribute("href")
+                        channel_image = channel_image_element.get_attribute("src") if channel_image_element.get_attribute("src") else "https://example.com/default-image.png"
+
+                        if url and url not in self.seen_ids:
+                            self.seen_ids.add(url)
+
+                            video_id_match = re.search(r"v=([^&]+)", url)
+                            if video_id_match:
+                                video_id = video_id_match.group(1)
+                                self.unique_videos.append({
+                                    "videoId": video_id,
+                                    "videoTitle": title,
+                                    "channelImage": channel_image
+                                })
+                    except Exception as e:
+                        logging.warning(f"Error processing video: {e}")
+
+                if not video_elements or len(self.unique_videos) >= max_videos:
+                    break
+
+                self.scroll_down()
             except Exception as e:
                 retries -= 1
                 logging.error(f"Error collecting videos. Retries left: {retries}. Error: {e}")
+                if retries == 0:
+                    break
 
     def scroll_down(self):
         try:
-            logging.info("Scrolling down to load more videos...")
             self.driver.execute_script("window.scrollTo(0, document.documentElement.scrollHeight);")
             self.wait.until(
                 EC.presence_of_element_located(
@@ -144,13 +153,34 @@ class YouTubeScraper:
             logging.error(f"Error scrolling down: {e}")
             raise
 
+    def send_result_to_kafka(self, topic="categoryLiveList"):
+        logging.info("Preparing to send data to Kafka...")
+        result = {
+            "category": self.search_keyword,
+            "items": self.unique_videos,
+        }
+
+        max_retries = 3
+        retry_count = 0
+
+        while retry_count < max_retries:
+            try:
+                future = self.producer.send(topic, value=result)
+                metadata = future.get(timeout=10)
+                logging.info(f"Data successfully sent to Kafka topic '{metadata.topic}' at partition {metadata.partition}, offset {metadata.offset}.")
+                self.producer.flush()
+                return
+            except Exception as e:
+                retry_count += 1
+                logging.error(f"Attempt {retry_count}/{max_retries} failed to send data to Kafka: {e}")
+                time.sleep(2)
+
+        logging.critical(f"Failed to send data to Kafka after {max_retries} attempts.")
+
     def scrape(self):
         try:
             self.setup_driver()
             self.search()
-            self.apply_filter(
-                "/html/body/ytd-app/ytd-popup-container/tp-yt-paper-dialog/ytd-search-filter-options-dialog-renderer/div[2]/ytd-search-filter-group-renderer[2]/ytd-search-filter-renderer[1]/a/div/yt-formatted-string"
-            )
             self.apply_filter(
                 "/html/body/ytd-app/ytd-popup-container/tp-yt-paper-dialog/ytd-search-filter-options-dialog-renderer/div[2]/ytd-search-filter-group-renderer[4]/ytd-search-filter-renderer[1]/a/div/yt-formatted-string"
             )
@@ -161,61 +191,30 @@ class YouTubeScraper:
         finally:
             self.driver.quit()
 
-    def send_result_to_kafka(self, topic="categoryLiveList"):
-        logging.info("Preparing to send data to Kafka...")
-        result = self.get_result()
-        if not result["items"]:
-            logging.warning("No data collected. Skipping Kafka send.")
-            return
-        
-        max_retries = 5
-        retry_count = 0
-        
-        while retry_count < max_retries:
-            try:
-                future = self.producer.send(topic, value=result)
-                metadata = future.get(timeout=10)
-                logging.info(f"Data successfully sent to Kafka topic '{metadata.topic}' at partition {metadata.partition}, offset {metadata.offset}.")
-                self.producer.flush()
-                return
-            except Exception as e:
-                retry_count += 1
-                logging.error(
-                    f"Attempt {retry_count}/{max_retries} failed to send data to Kafka: {e}"
-                )
-                time.sleep(2)
-        
-        logging.critical(f"Failed to send data to Kafka after {max_retries} attempts.")
-
-    def get_result(self):
-        return {
-            "category": "policy",
-            "items": self.unique_videos,
-        }
-
-
-def run_scraper():
-    scraper = YouTubeScraper("정치")
+def scrape_category(category):
+    scraper = YouTubeScraper(category)
     scraper.scrape()
     scraper.send_result_to_kafka()
 
-
-# 2분마다 실행
-schedule.every(2).minutes.do(run_scraper)
+def run_scraper():
+    categories = ["정치", "리그오브레전드", "메이플스토리", "로스트아크", "음악"]
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        executor.map(scrape_category, categories)
 
 if __name__ == "__main__":
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(run_scraper, 'interval', minutes=7)
+    scheduler.start()
+
     try:
         logging.info("Scheduler is running. Press Ctrl+C to stop.")
         
-        # 즉시 실행
-        run_scraper()
+        # 파드 시작 시 즉시 실행
+        logging.info("Running scraper immediately as the pod starts.")
+        run_scraper()  # 즉시 실행
         
         while True:
-            schedule.run_pending()
-            time.sleep(1)
-    except KeyboardInterrupt:
-        logging.warning("Scheduler interrupted by user. Exiting gracefully.")
-    except Exception as e:
-        logging.critical(f"Unexpected error: {e}", exc_info=True)
-    finally:
+            time.sleep(1)  # 메인 루프 유지
+    except (KeyboardInterrupt, SystemExit):
+        scheduler.shutdown()
         logging.info("Scheduler has stopped.")
