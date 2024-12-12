@@ -159,10 +159,10 @@ class YouTubeScraper:
         logging.info("Preparing to send data to Kafka...")
         result = {
             "category": self.search_keyword,
-            "items": self.unique_videos if self.unique_videos else [{"message": "데이터가 없습니다"}],
+            "items": self.unique_videos,  # 있는 데이터만 전송
         }
 
-        max_retries = 5
+        max_retries = 3
         retry_count = 0
 
         while retry_count < max_retries:
@@ -210,8 +210,8 @@ def run_scraper():
         executor.map(scrape_category, categories)
 
 
-# 5분마다 실행
-schedule.every(5).minutes.do(run_scraper)
+# 7분마다 실행
+schedule.every(7).minutes.do(run_scraper)
 
 if __name__ == "__main__":
     try:
@@ -219,7 +219,7 @@ if __name__ == "__main__":
 
         # 즉시 실행
         run_scraper()
-
+        
         while True:
             schedule.run_pending()
             time.sleep(1)
