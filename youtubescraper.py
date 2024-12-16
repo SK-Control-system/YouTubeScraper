@@ -93,33 +93,60 @@ class YouTubeScraper:
             logging.error(f"Error applying filter with XPath '{xpath}': {e}")
             raise
 
-    def collect_videos(self):
-        logging.info("Collecting video data...")
-        retries = 3
-        max_videos = 5
+    def scroll_down(self, max_wait_time=10):
+        try:
+            current_height = self.driver.execute_script("return document.documentElement.scrollHeight")
+            self.driver.execute_script("window.scrollTo(0, document.documentElement.scrollHeight);")
+            WebDriverWait(self.driver, max_wait_time).until(
+                lambda driver: driver.execute_script("return document.documentElement.scrollHeight") > current_height
+            )
+            logging.info("Page scrolled and new content loaded.")
+        except Exception as e:
+            logging.warning(f"Error waiting for content to load after scroll: {e}")
 
-        while retries > 0:
+    def collect_videos(self):
+        logging.info(f"Collecting video data for keyword: {self.search_keyword}")
+        max_videos = 5  # 최대 수집 동영상 개수
+        scroll_attempts = 0  # 스크롤 시도 횟수
+        max_scrolls = 3  # 최대 스크롤 횟수
+
+        while len(self.unique_videos) < max_videos and scroll_attempts < max_scrolls:
             try:
                 video_elements = self.driver.find_elements(By.XPATH, '//ytd-video-renderer')
-                logging.info(f"Found {len(video_elements)} video elements.")
+                logging.info(f"Found {len(video_elements)} video elements on the page.")
 
                 for video in video_elements:
                     if len(self.unique_videos) >= max_videos:
-                        break
+                        break  # 필요한 동영상 개수 도달 시 종료
 
                     try:
-                        title_element = video.find_element(By.XPATH, ".//a[@id='video-title']")
-                        channel_image_element = WebDriverWait(video, 10).until(
-                            EC.presence_of_element_located((By.XPATH, ".//a[@id='channel-thumbnail']//img"))
+                        # 비디오 제목과 URL 추출
+                        title_element = WebDriverWait(video, 10).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, "a#video-title"))
                         )
-
                         title = title_element.get_attribute("title")
                         url = title_element.get_attribute("href")
-                        channel_image = channel_image_element.get_attribute("src") if channel_image_element.get_attribute("src") else "https://example.com/default-image.png"
 
+                        # 채널 이미지 추출 (스크롤 및 대기 적용)
+                        self.driver.execute_script("arguments[0].scrollIntoView(true);", video)
+                        time.sleep(3)  # 이미지 로딩 대기
+
+                        # 채널 이미지 추출 (CSS Selector 사용 및 다중 속성 검사)
+                        channel_image_element = WebDriverWait(video, 15).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, "a#channel-thumbnail img"))
+                        )
+                        channel_image = (
+                            channel_image_element.get_attribute("src") or
+                            channel_image_element.get_attribute("data-src") or
+                            channel_image_element.get_attribute("srcset") or
+                            "https://example.com/default-image.png"
+                        )
+
+                        logging.info(f"Extracted channel image: {channel_image}")
+
+                        # URL 중복 검사 및 데이터 추가
                         if url and url not in self.seen_ids:
                             self.seen_ids.add(url)
-
                             video_id_match = re.search(r"v=([^&]+)", url)
                             if video_id_match:
                                 video_id = video_id_match.group(1)
@@ -128,30 +155,31 @@ class YouTubeScraper:
                                     "videoTitle": title,
                                     "channelImage": channel_image
                                 })
+                                logging.info(f"Collected video: {title} ({url})")
+
                     except Exception as e:
-                        logging.warning(f"Error processing video: {e}")
+                        logging.warning(f"Error processing video element: {e}")
+                        logging.debug(f"HTML content: {video.get_attribute('outerHTML')}")  # 디버깅용 HTML 출력
 
-                if not video_elements or len(self.unique_videos) >= max_videos:
+                # 데이터 부족 시 조기 종료 로직 추가
+                if len(self.unique_videos) < max_videos:
+                    logging.info("Not enough videos available. Ending collection early.")
                     break
 
-                self.scroll_down()
+                    # 필요한 데이터가 수집되지 않은 경우 스크롤 시도
+                    self.scroll_down()
+                    scroll_attempts += 1
+                    logging.info(f"Scrolled down {scroll_attempts}/{max_scrolls} times.")
+                    time.sleep(1)  # 스크롤 후 대기 시간
+                else:
+                    break
+
             except Exception as e:
-                retries -= 1
-                logging.error(f"Error collecting videos. Retries left: {retries}. Error: {e}")
-                if retries == 0:
-                    break
+                logging.error(f"Error during video collection: {e}")
+                break
 
-    def scroll_down(self):
-        try:
-            self.driver.execute_script("window.scrollTo(0, document.documentElement.scrollHeight);")
-            self.wait.until(
-                EC.presence_of_element_located(
-                    (By.XPATH, '//ytd-video-renderer')
-                )
-            )
-        except Exception as e:
-            logging.error(f"Error scrolling down: {e}")
-            raise
+        logging.info(f"Total videos collected: {len(self.unique_videos)}")
+
 
     def send_result_to_kafka(self, topic="categoryLiveList"):
         logging.info("Preparing to send data to Kafka...")
@@ -203,7 +231,7 @@ def run_scraper():
 
 if __name__ == "__main__":
     scheduler = BackgroundScheduler()
-    scheduler.add_job(run_scraper, 'interval', minutes=7)
+    scheduler.add_job(run_scraper, 'interval', minutes=15)
     scheduler.start()
 
     try:
