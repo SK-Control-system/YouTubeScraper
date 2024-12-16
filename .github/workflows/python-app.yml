@@ -31,7 +31,7 @@ jobs:
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: youtubescraper
-          IMAGE_TAG: latest
+          IMAGE_TAG: ${{ github.run_number }}
         run: |
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
@@ -44,9 +44,11 @@ jobs:
         run: |
 
           # GitHub Actions 변수 값을 환경 변수로 선언
-          ECR_IMAGE="${{ steps.login-ecr.outputs.registry }}/youtubescraper:latest"
+          ECR_IMAGE="${{ steps.login-ecr.outputs.registry }}/youtubescraper:${{ github.run_number }}"
 
-          # sed 명령어 실행 (쉘 변수 사용)
-          sed -i "s|615299753054.dkr.ecr.us-east-1.amazonaws.com/youtubescraper:latest|$ECR_IMAGE|" youtubescraper-deployment.yaml
+          # sed 명령어 실행: deployment 파일의 이미지 태그를 동적으로 업데이트
+          sed -i "s|615299753054.dkr.ecr.us-east-1.amazonaws.com/youtubescraper:.*|$ECR_IMAGE|" youtubescraper-deployment.yaml
+
+          # Kubernetes 배포 적용
           kubectl apply -f youtubescraper-deployment.yaml
-         
+          kubectl rollout status deployment/youtubescraper
