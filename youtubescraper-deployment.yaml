@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
       - name: youtubescraper
-        image: 615299753054.dkr.ecr.ap-southeast-2.amazonaws.com/youtubescraper:latest
+        image: 615299753054.dkr.ecr.us-east-1.amazonaws.com/youtubescraper:latest
         env:
         - name: KAFKA_BROKER
           value: kafka-svc:9093  # Kafka 브로커 주소
