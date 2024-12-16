@@ -225,7 +225,7 @@ def scrape_category(category):
     scraper.send_result_to_kafka()
 
 def run_scraper():
-    categories = ["정치", "리그오브레전드"]
+    categories = ["정치", "리그오브레전드", "음악"]
     with ThreadPoolExecutor(max_workers=5) as executor:
         executor.map(scrape_category, categories)
 
