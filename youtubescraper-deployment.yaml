@@ -21,4 +21,4 @@ spec:
         - name: KAFKA_BROKER
           value: kafka-svc:9093  # Kafka 브로커 주소
         ports:
-        - containerPort: 8080
+        - containerPort: 8080 
